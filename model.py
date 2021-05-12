@@ -15,9 +15,50 @@ from easydict import EasyDict as edict
 import json
 import pandas as pd
 
+import sklearn.metrics as _metrics
+
 
 # local data loader 
 from data.dataset import ImageDataset 
+
+
+class SingleChannelResnet(nn.Module):
+    """ A class to convert a resent torchvision model to a grayscale
+    input, binary classification output model """
+    
+    def __init__(self, pretrain=True, in_channels=1):
+        """
+        args:
+            : pretrain (bool): use pretrained weights?
+            : in_channels (int): number of channels, either 1 or 3
+        """
+        super(SingleChannelResnet, self).__init__()
+        
+        if pretrain:
+            self.model = models.resnet18(pretrained=True)
+#             for param in self.model.parameters():
+#                 param.requires_grad = False
+        else:
+            self.model = models.resnet18(pretrained=False)
+        
+        # modify output
+        num_ftrs = self.model.fc.in_features
+        self.model.fc = nn.Linear(num_ftrs, 2)
+        
+        # modify the input 
+        self.model.conv1 = nn.Conv2d(in_channels, 
+                                64, 
+                                kernel_size=7, 
+                                stride=2, 
+                                padding=3, 
+                                bias=False)
+        
+    def forward(self, x):
+        """for good measure, include the necessary method"""
+        return self.model(x)
+    
+    
+    
 
 
 class TransferModel():
@@ -28,12 +69,12 @@ class TransferModel():
         
         args:
             : cfg_path (str): path to the configuration file
-            : use_cpu (bool): use GPU or CPU
+            : use_cpu (bool): if true, use cpu()
         """
         if use_cpu:
             self.device = torch.device("cpu")
         else:
-            self.device = torch.device("cuda")
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             
         # load configuration params used throughout
         self.config = self._load_config(cfg_path)
@@ -52,7 +93,7 @@ class TransferModel():
         
         self.trainning_map = self._get_label_map(self.train_headers)
         self.dev_map = self._get_label_map(self.dev_headers)
-        self.valid__map = self._get_label_map(self.valid_headers)
+        self.valid_map = self._get_label_map(self.valid_headers)
         
         # construct resnet
         self.model = self._construct_base_model()
@@ -60,17 +101,46 @@ class TransferModel():
         # construct ADAM
         self.optimizer = self._construct_optimizer()
         
-        # define loss
-        self.criterion = nn.CrossEntropyLoss()
-        self.criterion.to(self.device)
+        # define loss    
+        
+        if self.config.use_class_weight:
+            weights = self._get_class_weights()
+            self.criterion = nn.CrossEntropyLoss(weights)
+            self.criterion.to(self.device)
+        else:
+            self.criterion = nn.CrossEntropyLoss()
+            self.criterion.to(self.device)
         
         # set structure for best model
         self.best_model = None
         self.dev_acc_history = []
         self.dev_loss_history = []
+        self.dev_metric_history = []
         
         self.train_acc_history = []
         self.train_loss_history = []
+        self.train_metric_history = []
+        
+        self.mean_metric = 'f1_score'
+        
+    
+    def _get_class_weights(self):
+        """A function to compute class wieghts from trainning data
+        
+        NOTE: we wish to punish mistakes on class 1 more 
+        harshly, so we use the weight of the other class to balance
+        
+        returns:
+            : wieghts (torch.tensor): (neg, pos)
+        """
+        cond_idx = self.trainning_map[self.condition]
+        data_size = len(self.dataloader_train.dataset)
+        
+        labels = np.asarray(self.dataloader_train.dataset._labels)
+        pos_class_count = labels[:, cond_idx].sum()
+        pos_weight = pos_class_count / data_size
+        neg_weight = 1 - pos_weight
+        return torch.FloatTensor([pos_weight, neg_weight])
     
     
     def _load_config(self, cfg_path):
@@ -144,16 +214,8 @@ class TransferModel():
         returns:
             : model (torchvision.models.resnet.ResNet)
         """
-        if self.config.pretrained:
-            model = models.resnet18(pretrained=True)
-            for param in model.parameters():
-                param.requires_grad = False
-        else:
-            model = models.resnet18(pretrained=False)
-        
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, 2)
-        return model
+        return SingleChannelResnet(pretrain=self.config.pretrained, 
+                            in_channels=self.config.n_channels)
     
     
     def _get_label_map(self, label_headers):
@@ -173,11 +235,18 @@ class TransferModel():
         """A function to construct the optimizer for the trainable layers
         
         returns:
-            : optimizer (torch.optim.Adam)
+            : opt (torch.optim.Optimizer): an optimizer for the model
         """
-        return optim.SGD(self.model.parameters(), 
-                         lr=self.config.learning_rate, 
-                         momentum=self.config.momentum)
+        
+#         opt = optim.Adam(self.model.parameters(), 
+#                          lr=self.config.learning_rate, 
+#                          betas=(self.config.beta1, self.config.beta2))
+        
+        opt = optim.SGD(self.model.parameters(), 
+                        lr=self.config.learning_rate, 
+                        momentum=self.config.momentum)
+                         
+        return opt
     
     
     def _get_loss(self, output, labels, label_map):
@@ -190,7 +259,6 @@ class TransferModel():
         
         returns:
             : loss (float): the loss of the batch
-            : n_correct (int): the number of correct predictions
         """
         cond_idx = label_map[self.condition]
         target = labels[:, cond_idx].type(torch.LongTensor)
@@ -198,8 +266,38 @@ class TransferModel():
         loss = self.criterion(output, target)
         _, y_pred = torch.max(output, 1)
         n_correct = torch.sum(y_pred == target)
-        return loss, n_correct
-      
+        return loss
+     
+        
+    def _get_batch_metrics(self, output, labels, label_map):
+        """A function to compute batch metrics 
+        
+        args:
+            : output (torch.Tensor): model output
+            : labels (torch.Tensor): matrix of labels
+            : label_map (dict): the label map to use
+            
+        returns:
+            : metrics (dict): dictionary of metrics for the batch
+        """
+        cond_idx = label_map[self.condition]
+        y_true = labels[:, cond_idx].detach().numpy().astype(int)
+        _, y_pred = torch.max(output, 1)
+        y_pred = y_pred.detach().numpy().astype(int)
+        
+        n_correct = np.sum(y_pred == y_true)
+        
+        metrics = {
+            'n_correct' : n_correct,
+            'f1_score' : _metrics.f1_score(y_true, y_pred, zero_division=0),
+            'precision_score' : _metrics.precision_score(y_true, y_pred, zero_division=0),
+            'recall_score' : _metrics.recall_score(y_true, y_pred),
+            
+        }
+        
+        return metrics
+        
+        
     
     def _train_epoch(self):
         """A function to wrap trainning procedure
@@ -212,7 +310,8 @@ class TransferModel():
             
         running_loss = 0.0
         running_corrects = 0
-        
+        mean_metric = 0
+         
         with torch.set_grad_enabled(True):
             for b_id, (inputs, labels) in enumerate(self.dataloader_train):
                 inputs = inputs.to(self.device)
@@ -221,7 +320,13 @@ class TransferModel():
                 self.optimizer.zero_grad()
 
                 output = self.model(inputs)       
-                loss, n_correct = self._get_loss(output, labels, self.trainning_map)
+                loss = self._get_loss(output, labels, self.trainning_map)
+                
+                batch_scores = self._get_batch_metrics(output, labels, self.trainning_map)
+                batch_scores['batch'] = batch_scores
+                self.train_metric_history.append(batch_scores)
+                
+                mean_metric += batch_scores[self.mean_metric]
 
                 # backward + optimize only if in training phase
                 loss.backward()
@@ -229,14 +334,15 @@ class TransferModel():
 
                 # batch statistics
                 running_loss += loss.item() * inputs.size(0)
-                running_corrects += n_correct
+                running_corrects += batch_scores['n_correct']
             
         # epoch statistics
         data_size = len(self.dataloader_train.dataset)
+        epoch_metric = mean_metric / data_size
         epoch_loss = running_loss / data_size
         epoch_acc = running_corrects / data_size
             
-        return epoch_loss, epoch_acc
+        return epoch_loss, epoch_acc, epoch_metric
     
     
     def _eval_epoch(self):
@@ -250,6 +356,7 @@ class TransferModel():
             
         running_loss = 0.0
         running_corrects = 0
+        mean_metric = 0
         
         with torch.no_grad():
             for b_id, (inputs, labels) in enumerate(self.dataloader_dev):
@@ -259,18 +366,26 @@ class TransferModel():
                 self.optimizer.zero_grad()
 
                 output = self.model(inputs)       
-                loss, n_correct = self._get_loss(output, labels, self.dev_map)
+                loss = self._get_loss(output, labels, self.dev_map)
+                
+                batch_scores = self._get_batch_metrics(output, labels, self.dev_map)
+                batch_scores['batch'] = batch_scores
+                
+                mean_metric += batch_scores[self.mean_metric]
+                
+                self.dev_metric_history.append(batch_scores)
 
                 # batch statistics
                 running_loss += loss.item() * inputs.size(0)
-                running_corrects += n_correct
+                running_corrects += batch_scores['n_correct']
             
         # epoch statistics
         data_size = len(self.dataloader_dev.dataset)
         epoch_loss = running_loss / data_size
         epoch_acc = running_corrects / data_size
+        epoch_metric = mean_metric / data_size
             
-        return epoch_loss, epoch_acc
+        return epoch_loss, epoch_acc, epoch_metric
         
         
     def train(self):
@@ -299,7 +414,7 @@ class TransferModel():
             """
             TRAIN THE MODEL
             """    
-            train_loss, train_acc = self._train_epoch()
+            train_loss, train_acc, train_metric = self._train_epoch()
             self.train_loss_history.append(train_loss)
             self.train_acc_history.append(train_acc)
             
@@ -308,7 +423,7 @@ class TransferModel():
             """
             EVALUATE THE MODEL
             """
-            dev_loss, dev_acc = self._eval_epoch()
+            dev_loss, dev_acc, dev_metric = self._eval_epoch()
             self.dev_loss_history.append(dev_loss)
             self.dev_acc_history.append(dev_acc)
             

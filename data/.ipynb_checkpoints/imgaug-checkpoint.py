@@ -6,9 +6,8 @@ import cv2
 import torchvision.transforms as tfs
 
 
-def Common(image):
+def HistEQ(image):
     image = cv2.equalizeHist(image)
-    image = cv2.GaussianBlur(image, (3, 3), 0)
     return image
 
 
@@ -29,8 +28,8 @@ def GetTransforms(image, target=None, type='None'):
         raise Exception(
             'Target is not support now ! ')
     # get type
-    if type.strip() == 'Common':
-        return image
+    if type.strip() == 'HistEQ':
+        return HistEQ(image)
     elif type.strip() == 'None':
         return image
     elif type.strip() == 'Aug':

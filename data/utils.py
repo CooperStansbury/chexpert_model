@@ -62,13 +62,18 @@ def transform(image, cfg):
 
     # normalization
     image = image.astype(np.float32) - cfg.pixel_mean
-    # vgg and resnet do not use pixel_std, densenet and inception use.
     
+    
+    # vgg and resnet do not use pixel_std, densenet and inception use.
     if cfg.pixel_std:
         image /= cfg.pixel_std
         
     # normal image tensor :  H x W x C
     # torch image tensor :   C X H X W
     image = image.transpose((2, 0, 1))
-
+    
+    # translate for greyscale resnet
+    if cfg.n_channels == 1:
+        image = image[0:1, :, :]
+    
     return image
