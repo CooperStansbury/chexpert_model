@@ -125,8 +125,8 @@ def get_classification_metrics(results):
 
         # get precision/recall
         rate = y_test.mean()
-        precision = tp / (tp + fn * (1 / rate - 1))
-        recall = tp / (tp + fn * (1 / rate - 1))
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
         f1 = 2 * tp / (2*tp + fp + fn)
 
         res_dict = {

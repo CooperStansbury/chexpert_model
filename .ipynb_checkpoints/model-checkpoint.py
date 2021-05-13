@@ -26,7 +26,7 @@ class SingleChannelResnet(nn.Module):
     """ A class to convert a resent torchvision model to a grayscale
     input, binary classification output model """
     
-    def __init__(self, pretrain=True, in_channels=1):
+    def __init__(self, pretrain=True, in_channels=1, train_last_n=10):
         """
         args:
             : pretrain (bool): use pretrained weights?
@@ -36,8 +36,8 @@ class SingleChannelResnet(nn.Module):
         
         if pretrain:
             self.model = models.resnet18(pretrained=True)
-#             for param in self.model.parameters():
-#                 param.requires_grad = False
+            for param in list(self.model.parameters())[:-train_last_n]:
+                param.requires_grad = False
         else:
             self.model = models.resnet18(pretrained=False)
         
@@ -103,13 +103,9 @@ class TransferModel():
         
         # define loss    
         
-        if self.config.use_class_weight:
-            weights = self._get_class_weights()
-            self.criterion = nn.CrossEntropyLoss(weights)
-            self.criterion.to(self.device)
-        else:
-            self.criterion = nn.CrossEntropyLoss()
-            self.criterion.to(self.device)
+        weights = self._get_class_weights()
+        self.criterion = nn.CrossEntropyLoss(weights)
+        self.criterion.to(self.device)
         
         # set structure for best model
         self.best_model = None
@@ -133,14 +129,8 @@ class TransferModel():
         returns:
             : wieghts (torch.tensor): (neg, pos)
         """
-        cond_idx = self.trainning_map[self.condition]
-        data_size = len(self.dataloader_train.dataset)
-        
-        labels = np.asarray(self.dataloader_train.dataset._labels)
-        pos_class_count = labels[:, cond_idx].sum()
-        pos_weight = pos_class_count / data_size
-        neg_weight = 1 - pos_weight
-        return torch.FloatTensor([pos_weight, neg_weight])
+        wghts = self.config.class_weights
+        return torch.FloatTensor(wghts)
     
     
     def _load_config(self, cfg_path):
@@ -215,7 +205,8 @@ class TransferModel():
             : model (torchvision.models.resnet.ResNet)
         """
         return SingleChannelResnet(pretrain=self.config.pretrained, 
-                            in_channels=self.config.n_channels)
+                                   in_channels=self.config.n_channels,
+                                   train_last_n=self.config.train_last_n)
     
     
     def _get_label_map(self, label_headers):
@@ -466,9 +457,10 @@ class TransferModel():
             for i, (inputs, labels) in enumerate(loader):
                 output = self.model(inputs)
                 
-                
                 _, y_pred = torch.max(output, 1)
-                y_prob = F.softmax(output, dim=1)
+                y_prob = F.sigmoid(output)
+        
+        
                 top_p, _ = y_prob.topk(1, dim=1)
 
                 for j, _ in enumerate(inputs):
