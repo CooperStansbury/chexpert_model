@@ -21,13 +21,11 @@
     "train_batch_size": 36,
     "dev_batch_size": 36,
     "num_workers": 36,
-    "learning_rate": 0.001,
+    "learning_rate": 0.0001,
     "momentum": 0.5,
-    "beta1": 0.9,
-    "beta2": 0.999,
-    "num_epochs": 10,
+    "num_epochs": 30,
     "pretrained": true,
     "n_channels": 1,
-    "class_weights": [2, 8],
-    "train_last_n": 100
+    "class_weights": [1, 10]
+    
 }

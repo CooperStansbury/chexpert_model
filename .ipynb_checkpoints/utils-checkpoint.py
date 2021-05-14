@@ -131,10 +131,10 @@ def get_classification_metrics(results):
 
         res_dict = {
             'optimal_threshold': optimal_threshold,
-            'true negatives': tn,
-            'true positives': tp,
-            'false positives': fp,
-            'false negatives': fn,
+            'true negatives': int(tn),
+            'true positives': int(tp),
+            'false positives': int(fp),
+            'false negatives': int(fn),
             'sensitivity': tp / (tp + fn),
             'specificity': tn / (tn + fp),
             'F1-score' : f1,

@@ -22,22 +22,23 @@ import sklearn.metrics as _metrics
 from data.dataset import ImageDataset 
 
 
+
 class SingleChannelResnet(nn.Module):
     """ A class to convert a resent torchvision model to a grayscale
     input, binary classification output model """
     
-    def __init__(self, pretrain=True, in_channels=1, train_last_n=10):
+    def __init__(self, pretrain=True, in_channels=1):
         """
         args:
             : pretrain (bool): use pretrained weights?
             : in_channels (int): number of channels, either 1 or 3
+            : unfreeze_n (int): number of params to train, all others set to False
+             
         """
         super(SingleChannelResnet, self).__init__()
         
         if pretrain:
             self.model = models.resnet18(pretrained=True)
-            for param in list(self.model.parameters())[:-train_last_n]:
-                param.requires_grad = False
         else:
             self.model = models.resnet18(pretrained=False)
         
@@ -56,9 +57,7 @@ class SingleChannelResnet(nn.Module):
     def forward(self, x):
         """for good measure, include the necessary method"""
         return self.model(x)
-    
-    
-    
+
 
 
 class TransferModel():
@@ -98,11 +97,10 @@ class TransferModel():
         # construct resnet
         self.model = self._construct_base_model()
         
-        # construct ADAM
+        # construct SGD
         self.optimizer = self._construct_optimizer()
         
         # define loss    
-        
         weights = self._get_class_weights()
         self.criterion = nn.CrossEntropyLoss(weights)
         self.criterion.to(self.device)
@@ -205,8 +203,7 @@ class TransferModel():
             : model (torchvision.models.resnet.ResNet)
         """
         return SingleChannelResnet(pretrain=self.config.pretrained, 
-                                   in_channels=self.config.n_channels,
-                                   train_last_n=self.config.train_last_n)
+                                   in_channels=self.config.n_channels)
     
     
     def _get_label_map(self, label_headers):
@@ -227,16 +224,10 @@ class TransferModel():
         
         returns:
             : opt (torch.optim.Optimizer): an optimizer for the model
-        """
-        
-#         opt = optim.Adam(self.model.parameters(), 
-#                          lr=self.config.learning_rate, 
-#                          betas=(self.config.beta1, self.config.beta2))
-        
+        """        
         opt = optim.SGD(self.model.parameters(), 
                         lr=self.config.learning_rate, 
                         momentum=self.config.momentum)
-                         
         return opt
     
     
@@ -285,9 +276,7 @@ class TransferModel():
             'recall_score' : _metrics.recall_score(y_true, y_pred),
             
         }
-        
-        return metrics
-        
+        return metrics    
         
     
     def _train_epoch(self):
@@ -458,9 +447,7 @@ class TransferModel():
                 output = self.model(inputs)
                 
                 _, y_pred = torch.max(output, 1)
-                y_prob = F.sigmoid(output)
-        
-        
+                y_prob = torch.sigmoid(output)
                 top_p, _ = y_prob.topk(1, dim=1)
 
                 for j, _ in enumerate(inputs):
