@@ -70,10 +70,11 @@ class TransferModel():
             : cfg_path (str): path to the configuration file
             : use_cpu (bool): if true, use cpu()
         """
+        self.use_cpu = use_cpu
         if use_cpu:
             self.device = torch.device("cpu")
         else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
             
         # load configuration params used throughout
         self.config = self._load_config(cfg_path)
@@ -96,6 +97,7 @@ class TransferModel():
         
         # construct resnet
         self.model = self._construct_base_model()
+        self.model.to(self.device)
         
         # construct SGD
         self.optimizer = self._construct_optimizer()
@@ -202,8 +204,9 @@ class TransferModel():
         returns:
             : model (torchvision.models.resnet.ResNet)
         """
-        return SingleChannelResnet(pretrain=self.config.pretrained, 
+        model = SingleChannelResnet(pretrain=self.config.pretrained, 
                                    in_channels=self.config.n_channels)
+        return model.to(self.device)
     
     
     def _get_label_map(self, label_headers):
@@ -243,7 +246,7 @@ class TransferModel():
             : loss (float): the loss of the batch
         """
         cond_idx = label_map[self.condition]
-        target = labels[:, cond_idx].type(torch.LongTensor)
+        target = labels[:, cond_idx].type(torch.LongTensor).to(self.device)       
         
         loss = self.criterion(output, target)
         _, y_pred = torch.max(output, 1)
@@ -263,9 +266,9 @@ class TransferModel():
             : metrics (dict): dictionary of metrics for the batch
         """
         cond_idx = label_map[self.condition]
-        y_true = labels[:, cond_idx].detach().numpy().astype(int)
+        y_true = labels[:, cond_idx].cpu().detach().numpy().astype(int)
         _, y_pred = torch.max(output, 1)
-        y_pred = y_pred.detach().numpy().astype(int)
+        y_pred = y_pred.cpu().detach().numpy().astype(int)
         
         n_correct = np.sum(y_pred == y_true)
         
@@ -296,10 +299,10 @@ class TransferModel():
             for b_id, (inputs, labels) in enumerate(self.dataloader_train):
                 inputs = inputs.to(self.device)
                 labels = labels.to(self.device)
-
+                
                 self.optimizer.zero_grad()
 
-                output = self.model(inputs)       
+                output = self.model(inputs).to(self.device)       
                 loss = self._get_loss(output, labels, self.trainning_map)
                 
                 batch_scores = self._get_batch_metrics(output, labels, self.trainning_map)
@@ -345,7 +348,7 @@ class TransferModel():
 
                 self.optimizer.zero_grad()
 
-                output = self.model(inputs)       
+                output = self.model(inputs).to(self.device)            
                 loss = self._get_loss(output, labels, self.dev_map)
                 
                 batch_scores = self._get_batch_metrics(output, labels, self.dev_map)
@@ -444,7 +447,7 @@ class TransferModel():
         with torch.no_grad():
 
             for i, (inputs, labels) in enumerate(loader):
-                output = self.model(inputs)
+                output = self.model(inputs.to(self.device)).to(self.device)
                 
                 _, y_pred = torch.max(output, 1)
                 y_prob = torch.sigmoid(output)
@@ -452,9 +455,9 @@ class TransferModel():
 
                 for j, _ in enumerate(inputs):
                     row = {
-                        'y_prob': 1 - top_p[j].detach().numpy()[0],
-                        'y_pred': y_pred[j].detach().numpy(),
-                        'y_true': labels[j, cond_idx].detach().numpy()
+                        'y_prob': 1 - top_p[j].cpu().detach().numpy()[0],
+                        'y_pred': y_pred[j].cpu().detach().numpy(),
+                        'y_true': labels[j, cond_idx].cpu().detach().numpy()
                     }
 
                     new_rows.append(row)
