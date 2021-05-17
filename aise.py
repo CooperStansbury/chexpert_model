@@ -80,7 +80,7 @@ class AISE:
             hidden_layer=None,
             model=None,
             input_shape=None,
-            device=torch.device("cuda"),
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             n_class=10,
             n_neighbors=10,
             query_class="l2",
