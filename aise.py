@@ -149,7 +149,6 @@ class AISE:
         self.decay = decay
         self.n_population = n_population
         self.n_plasma = math.ceil(plasma_threshold * self.n_population)
-        print(self.n_plasma)
         self.n_memory = math.ceil(memory_threshold * self.n_population) - self.n_plasma
 
         self.keep_memory = keep_memory
